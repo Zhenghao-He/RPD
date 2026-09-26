@@ -34,6 +34,7 @@ always terminates.
 rpd/
   decode.py                     decoding loop, candidate admission, defaults
   gate.py                       cumulative residual-entropy gate
+  lazy_sp_readout.py            lazy layer projection (default; see below)
   models.py                     backbone loading, prompt formatting
   coupled_open_block_suffix.py  sparse readout over the pending positions
   coupled_gated_suffix.py       SP score: agreement length and peak drawdown
@@ -108,7 +109,13 @@ files are included.
   source position and its forward is called with `attention_mask='full'`. Both
   are handled in `models.py` and `decode.py`.
 - The SP readout adds LM-head projections over the posterior-half layers. These
-  cost no extra backbone forward, but they are not free: on a 48 GB card they
-  offset part of the NFE saving in wall-clock terms.
+  cost no extra backbone forward, but they are not free. By default the
+  projections are computed lazily: a position whose layer trajectory the entropy
+  gate can no longer need is never projected, and the remaining ones are
+  screened on the last few layers before the rest are materialised. This is what
+  the reported throughput uses. Passing `lazy_readout=False` selects the eager
+  reference implementation, which commits exactly the same tokens with exactly
+  the same NFE but runs roughly 1.3x slower in wall-clock terms; the two are
+  checked against each other in `decode.py`.
 - `kappa` and `tau` are retained for readout compatibility and do not affect the
   committed set under the configuration above.

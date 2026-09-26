@@ -11,6 +11,7 @@ import torch
 
 from .coupled_open_block_suffix import CoupledOpenBlockReadout
 from .gate import sequential_gate
+from .lazy_sp_readout import read_selectively
 
 # Frozen configuration used for the reported results.
 DEFAULTS = {
@@ -24,7 +25,14 @@ DEFAULTS = {
     'd': 0.25,
     'entropy_budget': 4.0,      # nats of residual debt tolerated
     'fallback_window': 32,
+    # Materialise a position's layer trajectory only when the gate still needs
+    # it. Commit decisions are identical either way; set False for the eager
+    # reference implementation, which is ~30% slower in wall-clock terms.
+    'lazy_readout': True,
 }
+# Keys the lazy readout asserts on; they restate the frozen policy above.
+_LAZY_POLICY = {'candidate_region': 'full_canvas', 'candidate_window_limit': None,
+                'high_conf_bypass': False, 'c_min_comparison': '>='}
 # Per-model score threshold and drawdown weight.
 MODELS = {
     'llada': {'drop_weight': 15.0, 'score_threshold': 3.5},
@@ -95,14 +103,17 @@ def decode(model, name, prompt_ids, config=None):
                 output = model(x, **kwargs)
                 captured = readout.positions[:, 1] - plen
                 indices = ((captured >= left) & (captured < length)).nonzero().flatten()
-                result = readout.read(output.logits, indices)
-
-                # Predictive entropy of each pending position, from the same forward.
-                logits = output.logits[readout.batch[indices],
-                                       readout.source_position[indices]].float()
-                log_p = logits.log_softmax(-1)
-                result.entropy = -(log_p.exp() * log_p).sum(-1)
-                del logits, log_p
+                if config['lazy_readout']:
+                    result = read_selectively(readout, output.logits, indices, dict(
+                        config, conf_entropy_budget=config['entropy_budget'],
+                        sp_entropy_budget=config['entropy_budget'], **_LAZY_POLICY))
+                else:
+                    result = readout.read(output.logits, indices)
+                    logits = output.logits[readout.batch[indices],
+                                           readout.source_position[indices]].float()
+                    log_p = logits.log_softmax(-1)
+                    result.entropy = -(log_p.exp() * log_p).sum(-1)
+                    del logits, log_p
 
                 chosen, debt, high, extra, fallback = select(result, left, length, config)
                 scope = result.positions[:, 1] - plen
